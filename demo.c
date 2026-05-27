@@ -13,13 +13,13 @@ int main (int argc, char **argv)
 			.opts = GC_FLAG_NO_ARGUMENT
 		},
 		{
-			.longname = NULL,
+			.longname = "file",
 			.shortname = 'f',
 			.opts = GC_FLAG_MUST_ARGUMENT | GC_ARG_TYPE_TEXT | GC_FLAG_IS_MANDATORY
 		}
 	};
 
 
-	printf("err: %d\n", getc_init(argc, argv, flags).err);
+	printf("err: %d\n", getc_init(argc, argv, flags, "testing").err);
 	return 0;
 }

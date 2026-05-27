@@ -96,13 +96,14 @@ struct GCAns {
 	enum GCError err;
 };
 
-GC_API struct GCAns getc_init (int, char**, struct GCFlag*);
-GC_API void getc_handle_error (const struct GCAns *const, const char *const);
+GC_API struct GCAns getc_init (int, char**, struct GCFlag*, const char*);
 
 #ifdef GC_IMPLEMENTATION
 
-#define GC_PARGS_FLEXIBLE
 #define GC_PARGS_STEP_FACTOR 8
+#define GC_PARGS_FLEXIBLE					// TODO: document
+
+#define GC_ALLOW_GC_HANDLE_ERRORS					// TODO: document
 
 #define GC_FLAG_ARG_MODE_MASK (0x3 << GC_FLAG_ARG_MODE_SHIFT)
 #define GC_FLAG_ARG_TYPE_MASK (0x7 << GC_FLAG_ARG_TYPE_SHIFT)
@@ -115,8 +116,11 @@ GC_API void getc_handle_error (const struct GCAns *const, const char *const);
 #define GC_BASE_DEC 10
 
 #define GC_IS_PROGRAMMER_FAULT(err) ((err < GCE_PROGRAMMER_FAULT_ENDS) && (err != GCE_NONE))
+#define GC_IS_USER_FAULT(err)       ((err > GCE_PROGRAMMER_FAULT_ENDS))
 
+#ifdef GC_ALLOW_GC_HANDLE_ERRORS
 #include <stdio.h> // TODO: remove
+#endif
 
 #include <ctype.h>
 #include <stdlib.h>
@@ -190,7 +194,21 @@ static void map_flags (struct GCMap *map, struct GCFlag *flags) {
 
 }
 
+static inline bool is_arg_set (const struct GCFlag *const flast) {
+	if (flast == NULL) {
+		return true;
+	}	
+	/* takes an argument -> argument set
+	 * does not take an argument or argument set
+	 */
+	return (((flast->opts & GC_FLAG_ARG_MODE_MASK) == GC_FLAG_NO_ARGUMENT) || (flast->aset));
+}
+
 static enum GCError work_short (struct GCMap *map, struct GCAns *ans) {
+	if (is_arg_set(ans->flast) == false) {
+		return GCE_MISSING_ARGUMENT;
+	}
+
 	for (ans->lex.pos = 1; ans->lex.pos < ans->lex.len; ans->lex.pos++) {
 		const char shortname = ans->lex.src[ans->lex.pos];
 		const uint32_t normal = normalize_shortname(shortname);
@@ -265,12 +283,17 @@ static struct GCFlag *find_flag_by_longname (const char *longname, const size_t 
 }
 
 static enum GCError parse_longopt (struct GCMap *const map, struct GCAns *const ans) {
+	if (is_arg_set(ans->flast) == false) {
+		return GCE_MISSING_ARGUMENT;
+	}
+
 	const char *eq = strchr(ans->lex.src, '=');
 	struct GCFlag *flag = NULL;
 
 	if (eq == NULL) {
 		flag = find_flag_by_longname(ans->lex.src + 2, ans->lex.len - 2, map);
 	} else {
+		// TODO; set argument
 		const size_t length = ((size_t) (eq -  ans->lex.src)) - 2;
 		flag = find_flag_by_longname(ans->lex.src + 2, length, map);
 	}
@@ -297,11 +320,12 @@ static enum GCError parse_positional_argument (struct GCAns *ans) {
 	if (ans->pargs.total == ans->pargs.__cap) {
 #ifdef GC_PARGS_FLEXIBLE
 		ans->pargs.__cap += GC_PARGS_STEP_FACTOR;
-		ans->pargs.arguments = (char**) realloc(ans->pargs.arguments, ans->pargs.__cap);
+		ans->pargs.arguments = (char**) realloc(ans->pargs.arguments, ans->pargs.__cap * sizeof(*ans->pargs.arguments));
 #else
 		return GCE_TOO_MANY_PARGS;
 #endif
 	}
+
 	ans->pargs.arguments[ans->pargs.total++] = ans->lex.src;
 	return GCE_NONE;
 }
@@ -323,14 +347,45 @@ static void programmer_fault (const enum GCError err) {
 	exit(EXIT_FAILURE);
 }
 
-GC_API struct GCAns getc_init (int argc, char **argv, struct GCFlag *flags) {
+static void getc_handle_error (const struct GCAns *const ans, const char *const pname) {
+	switch (ans->err) {
+		case GCE_UNKNOWN_SHORTNAME: {
+			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: unrecognizable `%c` short flag name\n", pname, ans->lex.src[ans->lex.pos]);
+			break;
+		}
+		case GCE_MISSING_ARGUMENT: {
+			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: `%c` flag requires an argument, but none was provided\n", pname, *ans->flast->longname);
+			break;
+		}
+		case GCE_NONSENSE_ARGUMENT: {
+			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: `%s` argument cannot be associated to any flag\n", pname, ans->lex.src);
+			break;
+		}
+		case GCE_UNKNOWN_LONGNAME: {
+			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: `%s` cannot be recognized as a program's flag\n", pname, ans->lex.src);
+			break;
+		}
+		case GCE_TOO_MANY_PARGS: {
+			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: %s, only accepts %d positional arguments, `%s` exceeds such limit\n", pname, pname, GC_PARGS_STEP_FACTOR, ans->lex.src);
+			break;
+		}
+	}
+	fprintf(stderr, "\tplease check usage if the error persists!\n");
+	exit(EXIT_FAILURE);
+}
+
+GC_API struct GCAns getc_init (int argc, char **argv, struct GCFlag *flags, const char *pgmname) {
 	struct GCAns ans;
 	memset(&ans, 0, sizeof(ans));
 
 	ans.err = check_integrity(flags);
 
 	if (GC_IS_PROGRAMMER_FAULT(ans.err)) {
+#ifdef GC_ALLOW_GC_HANDLE_ERRORS
 		programmer_fault(ans.err);
+#else
+		return ans;
+#endif
 	}
 	if (argc == 0 || argv == NULL) {
 		return ans;
@@ -339,10 +394,16 @@ GC_API struct GCAns getc_init (int argc, char **argv, struct GCFlag *flags) {
 	struct GCMap map;
 	map_flags(&map, flags);
 
+	bool onlypargs = false;
 	for (int i = 1; (i < argc) && (ans.err == GCE_NONE); i++) {
 		ans.lex.src = argv[i];
 		ans.lex.pos = 0;
 		ans.lex.len = strlen(ans.lex.src);
+
+		if (onlypargs) {
+			ans.err = parse_positional_argument(&ans);
+			continue;
+		}
 
 		if (*ans.lex.src == '-' && ans.lex.len >= 2 && isalnum(ans.lex.src[1])) {
 			ans.err = work_short(&map, &ans);
@@ -351,21 +412,25 @@ GC_API struct GCAns getc_init (int argc, char **argv, struct GCFlag *flags) {
 			ans.err = parse_longopt(&map, &ans);
 		}
 		else if (ans.lex.len == 2 && *ans.lex.src == '-' && ans.lex.src[1] == '-') {
-			ans.err = parse_positional_argument(&ans);
+			onlypargs = true;
 			
 		} else {
 			ans.err = parse_argument(&ans);
 		}
 	}
 
+	if (is_arg_set(ans.flast) == false) {
+		ans.err = GCE_MISSING_ARGUMENT;
+	}
+#ifdef GC_ALLOW_GC_HANDLE_ERRORS
+	if (GC_IS_USER_FAULT(ans.err)) {
+		getc_handle_error(&ans, pgmname);
+	}
 	if (GC_IS_PROGRAMMER_FAULT(ans.err)) {
 		programmer_fault(ans.err);
 	}
+#endif
 	return ans;
-}
-
-GC_API void getc_handle_error (const struct GCAns *const ans, const char *const pname) {
-	exit(EXIT_FAILURE);
 }
 
 #endif
