@@ -13,7 +13,7 @@ int main (int argc, char **argv)
 			.opts = GC_FLAG_NO_ARGUMENT
 		},
 		{
-			.longname = "file",
+			.longname = NULL,
 			.shortname = 'f',
 			.opts = GC_FLAG_MUST_ARGUMENT | GC_ARG_TYPE_TEXT | GC_FLAG_IS_MANDATORY
 		}

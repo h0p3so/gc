@@ -97,11 +97,12 @@ struct GCAns {
 };
 
 GC_API struct GCAns getc_init (int, char**, struct GCFlag*);
+GC_API void getc_handle_error (const struct GCAns *const, const char *const);
 
 #ifdef GC_IMPLEMENTATION
 
 #define GC_PARGS_FLEXIBLE
-#define GC_PARGS_GROWTH_FACTOR 8
+#define GC_PARGS_STEP_FACTOR 8
 
 #define GC_FLAG_ARG_MODE_MASK (0x3 << GC_FLAG_ARG_MODE_SHIFT)
 #define GC_FLAG_ARG_TYPE_MASK (0x7 << GC_FLAG_ARG_TYPE_SHIFT)
@@ -112,6 +113,8 @@ GC_API struct GCAns getc_init (int, char**, struct GCFlag*);
 
 #define GC_BASE_HEX 16
 #define GC_BASE_DEC 10
+
+#define GC_IS_PROGRAMMER_FAULT(err) ((err < GCE_PROGRAMMER_FAULT_ENDS) && (err != GCE_NONE))
 
 #include <stdio.h> // TODO: remove
 
@@ -175,23 +178,16 @@ static enum GCError check_integrity (struct GCFlag *flags) {
 	return GCE_NONE;
 }
 
-static int map_flags_cmp (const void *f1, const void *f2) {
-	struct GCFlag *flag1 = (struct GCFlag*) f1;
-	struct GCFlag *flag2 = (struct GCFlag*) f2;
-
-	return strcmp(flag1->longname, flag2->longname);
-}
-
 static void map_flags (struct GCMap *map, struct GCFlag *flags) {
 	memset(map, 0, sizeof(*map));
 	map->l = flags;
-	qsort(map->l, GC_NUM_FLAGS, sizeof(struct GCFlag), map_flags_cmp);
 
 	for (uint32_t i = 0; i < GC_NUM_FLAGS; i++) {
 		const char shortname = map->l[i].shortname;
 		const uint32_t normal = normalize_shortname(shortname);
 		map->s[normal] = &map->l[i];
 	}
+
 }
 
 static enum GCError work_short (struct GCMap *map, struct GCAns *ans) {
@@ -247,7 +243,7 @@ static struct GCFlag *find_flag_by_longname (const char *longname, const size_t 
 	const uint32_t normal = normalize_shortname(id);
 
 	struct GCFlag *flag = map->s[normal];
-	if (flag != NULL) {
+	if (flag != NULL && flag->longname != NULL) {
 		const size_t longitud = strlen(flag->longname);
 		if (longitud == length && (strncmp(flag->longname, longname, length) == 0)) {
 			return flag;
@@ -256,8 +252,11 @@ static struct GCFlag *find_flag_by_longname (const char *longname, const size_t 
 
 	for (uint32_t i = 0; i < GC_NUM_FLAGS; i++) {
 		flag = &map->l[i];
+		if (flag->longname == NULL) {
+			continue;
+		}
+
 		const size_t longitud = strlen(flag->longname);
-		
 		if (longitud == length && (strncmp(flag->longname, longname, length) == 0)) {
 			return flag;
 		}
@@ -290,14 +289,14 @@ static enum GCError parse_longopt (struct GCMap *const map, struct GCAns *const 
 // TODO validate ptr
 static enum GCError parse_positional_argument (struct GCAns *ans) {
 	if (ans->pargs.arguments == NULL) {
-		ans->pargs.arguments = (char**) calloc(GC_PARGS_GROWTH_FACTOR, sizeof(*ans->pargs.arguments));
-		ans->pargs.__cap = GC_PARGS_GROWTH_FACTOR;
+		ans->pargs.arguments = (char**) calloc(GC_PARGS_STEP_FACTOR, sizeof(*ans->pargs.arguments));
+		ans->pargs.__cap = GC_PARGS_STEP_FACTOR;
 		ans->pargs.total = 0;
 	}
 
 	if (ans->pargs.total == ans->pargs.__cap) {
 #ifdef GC_PARGS_FLEXIBLE
-		ans->pargs.__cap += GC_PARGS_GROWTH_FACTOR;
+		ans->pargs.__cap += GC_PARGS_STEP_FACTOR;
 		ans->pargs.arguments = (char**) realloc(ans->pargs.arguments, ans->pargs.__cap);
 #else
 		return GCE_TOO_MANY_PARGS;
@@ -307,13 +306,31 @@ static enum GCError parse_positional_argument (struct GCAns *ans) {
 	return GCE_NONE;
 }
 
+static void programmer_fault (const enum GCError err) {
+	const char *const errors[] = {
+		"inavlid shortname",
+		"duplicated shortname",
+		"duplicated longname",
+		"malformed flag's option field"
+	};	
+
+	fprintf(
+		stderr,
+		"\x1b[1mGC\x1b[0m: fatal error; aborting now: %s\n"
+		"\tplease check documentation if the error persists!\n",
+		errors[err - 1]
+	);
+	exit(EXIT_FAILURE);
+}
+
 GC_API struct GCAns getc_init (int argc, char **argv, struct GCFlag *flags) {
 	struct GCAns ans;
 	memset(&ans, 0, sizeof(ans));
 
 	ans.err = check_integrity(flags);
-	if (ans.err != GCE_NONE) {
-		return ans;
+
+	if (GC_IS_PROGRAMMER_FAULT(ans.err)) {
+		programmer_fault(ans.err);
 	}
 	if (argc == 0 || argv == NULL) {
 		return ans;
@@ -340,7 +357,15 @@ GC_API struct GCAns getc_init (int argc, char **argv, struct GCFlag *flags) {
 			ans.err = parse_argument(&ans);
 		}
 	}
+
+	if (GC_IS_PROGRAMMER_FAULT(ans.err)) {
+		programmer_fault(ans.err);
+	}
 	return ans;
+}
+
+GC_API void getc_handle_error (const struct GCAns *const ans, const char *const pname) {
+	exit(EXIT_FAILURE);
 }
 
 #endif
