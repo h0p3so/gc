@@ -10,12 +10,12 @@ int main (int argc, char **argv)
 		{
 			.longname = "verbose",
 			.shortname = 'v',
-			.opts = GC_FLAG_NO_ARGUMENT
+			.opts = GC_OPTS_FLAG_NON_ARG
 		},
 		{
 			.longname = "file",
 			.shortname = 'f',
-			.opts = GC_FLAG_MUST_ARGUMENT | GC_ARG_TYPE_TEXT | GC_FLAG_IS_MANDATORY
+			.opts = GC_OPTS_FLAG_REQ_ARG | GC_OPTS_FLAG_ARG_TYPE_TEXT
 		}
 	};
 

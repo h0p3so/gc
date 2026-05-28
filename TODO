@@ -3,5 +3,5 @@ mandatory:
 	[x] longname flags
 	[x] arguments
 	[x] --flagname=argument
-	[ ] error handling
+	[x] error handling
 	[ ] usage helper
