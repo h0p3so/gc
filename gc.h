@@ -8,10 +8,6 @@
 #	define GC_API static
 #endif
 
-#ifndef GC_NUM_FLAGS
-#	define GC_NUM_FLAGS 0
-#endif
-
 typedef unsigned char getc_opts_t;
 
 enum GCError {
@@ -62,17 +58,18 @@ struct GCAns {
 	enum GCError err;
 };
 
-GC_API struct GCAns getc_init (uint32_t, char**, struct GCFlag*, const char*);
+GC_API struct GCAns gc_init (uint32_t, char**, struct GCFlag*, const uint32_t, const char*);
+GC_API void gc_free (struct GCAns*);
 
 #ifdef GC_IMPLEMENTATION
 
 #define GC_INTERNAL_ARG_MODE_SHIFT           0x0
 #define GC_INTERNAL_ARG_TYPE_SHIFT           0x2
-#define GC_INTERAL_ARG_NUM_BASE_SHIFT        0x5
+#define GC_INTERNAL_ARG_NUM_BASE_SHIFT       0x5
 
 #define GC_INTERNAL_ARG_MODE_MASK            (0x3 << GC_INTERNAL_ARG_MODE_SHIFT)
 #define GC_INTERNAL_ARG_TYPE_MASK            (0x7 << GC_INTERNAL_ARG_TYPE_SHIFT)
-#define GC_INTERNAL_ARG_NUM_BASE_MASK        (0x1 << GC_INTERAL_ARG_NUM_BASE_SHIFT)
+#define GC_INTERNAL_ARG_NUM_BASE_MASK        (0x1 << GC_INTERNAL_ARG_NUM_BASE_SHIFT)
 
 #define GC_INTERNAL_PARGS_STEP_FACTOR        0x8
 #define GC_INTERNAL_TOTAL_NUM_FLAGS          (26 * 2 + 10)
@@ -102,8 +99,8 @@ GC_API struct GCAns getc_init (uint32_t, char**, struct GCFlag*, const char*);
  * since it is the standard. However, the programmer can always change this to
  * their own convenience.
  */
-#define GC_OPTS_ARG_NUM_BASE_10 (0x0 << GC_INTERAL_ARG_NUM_BASE_SHIFT)
-#define GC_OPTS_ARG_NUM_BASE_16 (0x1 << GC_INTERAL_ARG_NUM_BASE_SHIFT)
+#define GC_OPTS_ARG_NUM_BASE_10 (0x0 << GC_INTERNAL_ARG_NUM_BASE_SHIFT)
+#define GC_OPTS_ARG_NUM_BASE_16 (0x1 << GC_INTERNAL_ARG_NUM_BASE_SHIFT)
 
 #define GC_IS_PROGRAMMER_FAULT(err) ((err < GCE_PROGRAMMER_FAULT_ENDS) && (err != GCE_NONE))
 #define GC_IS_USER_FAULT(err)       ((err > GCE_PROGRAMMER_FAULT_ENDS) && (err < GCE_USER_FAULT_ENDS))
@@ -131,9 +128,10 @@ GC_API struct GCAns getc_init (uint32_t, char**, struct GCFlag*, const char*);
 struct GCMap {
 	struct GCFlag *flags;
 	struct GCFlag *mapper[GC_INTERNAL_TOTAL_NUM_FLAGS];
+	const uint32_t nflags;
 };
 
-static uint32_t normalize_shortname (const char shortname) {
+static uint32_t gc_internal_normalize_shortname (const char shortname) {
 	if (islower(shortname)) {
 		return shortname - 'a';
 	}
@@ -143,10 +141,10 @@ static uint32_t normalize_shortname (const char shortname) {
 	return shortname - '0';
 }
 
-static enum GCError check_integrity (struct GCFlag *flags) {
+static enum GCError gc_internal_check_integrity (struct GCFlag *flags, const uint32_t nflags) {
 	bool flagseen[GC_INTERNAL_TOTAL_NUM_FLAGS] = {0};
 
-	for (uint32_t i = 0; i < GC_NUM_FLAGS; i++) {
+	for (uint32_t i = 0; i < nflags; i++) {
 		flags[i].seen = false;
 		flags[i].aset = false;
 
@@ -155,7 +153,7 @@ static enum GCError check_integrity (struct GCFlag *flags) {
 			return GCE_INVALID_SHORTNAME;
 		}
 
-		const uint32_t normal = normalize_shortname(shortname);
+		const uint32_t normal = gc_internal_normalize_shortname(shortname);
 		if (flagseen[normal] != false) {
 			return GCE_DUPLICATED_SHORTNAME;
 		}
@@ -167,7 +165,7 @@ static enum GCError check_integrity (struct GCFlag *flags) {
 		if (length == 0) {
 			continue;
 		}
-		for (uint32_t j = i + 1; j < GC_NUM_FLAGS; j++) {
+		for (uint32_t j = i + 1; j < nflags; j++) {
 			const char *nomlong = flags[j].longname;
 			if (nomlong == NULL) {
 				continue;
@@ -184,36 +182,37 @@ static enum GCError check_integrity (struct GCFlag *flags) {
 	return GCE_NONE;
 }
 
-static void map_flags (struct GCMap *map, struct GCFlag *flags) {
-	memset(map, 0, sizeof(*map));
+static void gc_internal_map_flags (struct GCMap *map, struct GCFlag *flags) {
 	map->flags = flags;
 
-	for (uint32_t i = 0; i < GC_NUM_FLAGS; i++) {
+	for (uint32_t i = 0; i < map->nflags; i++) {
 		const char shortname = map->flags[i].shortname;
-		const uint32_t normal = normalize_shortname(shortname);
+		const uint32_t normal = gc_internal_normalize_shortname(shortname);
 		map->mapper[normal] = &map->flags[i];
 	}
-
 }
 
-static inline bool is_arg_set (const struct GCFlag *const flast) {
+static inline bool gc_internal_was_arg_set (const struct GCFlag *const flast) {
 	if (flast == NULL) {
 		return true;
-	}	
+	}
+	if ((flast->opts & GC_INTERNAL_ARG_MODE_MASK) == GC_OPTS_FLAG_OPT_ARG) {
+		return true;
+	}
 	/* IF takes an argument, argument set
 	 * does NOT take an argument OR argument set
 	 */
 	return (((flast->opts & GC_INTERNAL_ARG_MODE_MASK) == GC_OPTS_FLAG_NON_ARG) || (flast->aset));
 }
 
-static enum GCError work_short (struct GCMap *map, struct GCAns *ans) {
-	if (is_arg_set(ans->flast) == false) {
+static enum GCError gc_internal_parse_shortopt (struct GCMap *map, struct GCAns *ans) {
+	if (gc_internal_was_arg_set(ans->flast) == false) {
 		return GCE_MISSING_ARGUMENT;
 	}
 
 	for (ans->lex.pos = 1; ans->lex.pos < ans->lex.len; ans->lex.pos++) {
 		const char shortname = ans->lex.src[ans->lex.pos];
-		const uint32_t normal = normalize_shortname(shortname);
+		const uint32_t normal = gc_internal_normalize_shortname(shortname);
 
 		if (map->mapper[normal] == NULL) {
 			return GCE_UNKNOWN_SHORTNAME;
@@ -222,16 +221,11 @@ static enum GCError work_short (struct GCMap *map, struct GCAns *ans) {
 
 		ans->flast = flag;
 		ans->flast->seen = true;
-
-		const uint8_t takesarg = ((flag->opts & GC_INTERNAL_ARG_MODE_MASK) == GC_OPTS_FLAG_REQ_ARG);
-		if (takesarg && (ans->lex.pos + 1 < ans->lex.len)) {
-			return GCE_MISSING_ARGUMENT;
-		}
 	}
 	return GCE_NONE;
 }
 
-static enum GCError parse_argument (struct GCAns *ans) {
+static enum GCError gc_internal_parse_argument (struct GCAns *ans) {
 	if (ans->flast == NULL || ((ans->flast->opts & GC_INTERNAL_ARG_MODE_MASK) == GC_OPTS_FLAG_NON_ARG)) {
 		return GCE_NONSENSE_ARGUMENT;
 	}
@@ -254,9 +248,9 @@ static enum GCError parse_argument (struct GCAns *ans) {
 	return GCE_NONE;
 }
 
-static struct GCFlag *find_flag_by_longname (const char *longname, const size_t length, const struct GCMap *const map) {
+static struct GCFlag *gc_internal_find_longname_flag (const char *longname, const size_t length, const struct GCMap *const map) {
 	const char id = *longname;
-	const uint32_t normal = normalize_shortname(id);
+	const uint32_t normal = gc_internal_normalize_shortname(id);
 
 	struct GCFlag *flag = map->mapper[normal];
 	if (flag != NULL && flag->longname != NULL) {
@@ -266,7 +260,7 @@ static struct GCFlag *find_flag_by_longname (const char *longname, const size_t 
 		}
 	}
 
-	for (uint32_t i = 0; i < GC_NUM_FLAGS; i++) {
+	for (uint32_t i = 0; i < map->nflags; i++) {
 		flag = &map->flags[i];
 		if (flag->longname == NULL) {
 			continue;
@@ -280,8 +274,8 @@ static struct GCFlag *find_flag_by_longname (const char *longname, const size_t 
 	return NULL;
 }
 
-static enum GCError parse_longopt (struct GCMap *const map, struct GCAns *const ans) {
-	if (is_arg_set(ans->flast) == false) {
+static enum GCError gc_internal_parse_longopt (struct GCMap *const map, struct GCAns *const ans) {
+	if (gc_internal_was_arg_set(ans->flast) == false) {
 		return GCE_MISSING_ARGUMENT;
 	}
 
@@ -289,12 +283,12 @@ static enum GCError parse_longopt (struct GCMap *const map, struct GCAns *const 
 	enum GCError err = GCE_NONE;
 
 	if (eq == NULL) {
-		ans->flast = find_flag_by_longname(ans->lex.src + 2, ans->lex.len - 2, map);
+		ans->flast = gc_internal_find_longname_flag(ans->lex.src + 2, ans->lex.len - 2, map);
 	} else {
 		const size_t length = ((size_t) (eq -  ans->lex.src)) - 2;
-		ans->flast = find_flag_by_longname(ans->lex.src + 2, length, map);
+		ans->flast = gc_internal_find_longname_flag(ans->lex.src + 2, length, map);
 		ans->lex.src = eq + 1;
-		err = parse_argument(ans);
+		err = gc_internal_parse_argument(ans);
 	}
 
 	if (ans->flast == NULL) {
@@ -304,8 +298,8 @@ static enum GCError parse_longopt (struct GCMap *const map, struct GCAns *const 
 	return err;
 }
 
-static enum GCError getc_should_panic (const void *p, const char *msg) {
-	if (p) {
+static enum GCError gc_internal_should_panic (const void *p, const char *msg) {
+	if (p != NULL) {
 		return GCE_NONE;
 	}
 #ifdef GC_ALLOW_GC_HANDLE_ERRORS
@@ -317,7 +311,7 @@ static enum GCError getc_should_panic (const void *p, const char *msg) {
 	return GCE_NONE;
 }
 
-static enum GCError parse_positional_argument (struct GCAns *ans) {
+static enum GCError gc_internal_parse_parg (struct GCAns *ans) {
 	enum GCError err = GCE_NONE;
 
 	if (ans->pargs.arguments == NULL) {
@@ -325,14 +319,14 @@ static enum GCError parse_positional_argument (struct GCAns *ans) {
 		ans->pargs.__cap = GC_INTERNAL_PARGS_STEP_FACTOR;
 		ans->pargs.total = 0;
 
-		err = getc_should_panic(ans->pargs.arguments, "failed at allocating memory for positional arguments array");
+		err = gc_internal_should_panic(ans->pargs.arguments, "failed at allocating memory for positional arguments array");
 	}
 
 	if (ans->pargs.total == ans->pargs.__cap) {
 #ifdef GC_PARGS_FLEXIBLE
 		ans->pargs.__cap += GC_INTERNAL_PARGS_STEP_FACTOR;
 		ans->pargs.arguments = (char**) realloc(ans->pargs.arguments, ans->pargs.__cap * sizeof(*ans->pargs.arguments));
-		err = getc_should_panic(ans->pargs.arguments, "failed at expanding memory for positional arguments array");
+		err = gc_internal_should_panic(ans->pargs.arguments, "failed at expanding memory for positional arguments array");
 #else
 		return GCE_TOO_MANY_PARGS;
 #endif
@@ -343,9 +337,9 @@ static enum GCError parse_positional_argument (struct GCAns *ans) {
 }
 
 #ifdef GC_ALLOW_GC_HANDLE_ERRORS
-static void programmer_fault (const enum GCError err) {
+static void gc_internal_handle_programmer_fault (const enum GCError err) {
 	const char *const errors[] = {
-		"inavlid shortname",
+		"invalid shortname",
 		"duplicated shortname",
 		"duplicated longname",
 		"malformed flag's option field"
@@ -359,14 +353,14 @@ static void programmer_fault (const enum GCError err) {
 	exit(EXIT_FAILURE);
 }
 
-static void getc_handle_error (const struct GCAns *const ans, const char *const pname) {
+static void gc_internal_handle_user_fault (const struct GCAns *const ans, const char *const pname) {
 	switch (ans->err) {
 		case GCE_UNKNOWN_SHORTNAME: {
 			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: unrecognizable `%c` short flag name\n", pname, ans->lex.src[ans->lex.pos]);
 			break;
 		}
 		case GCE_MISSING_ARGUMENT: {
-			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: `%c` flag requires an argument, but none was provided\n", pname, *ans->flast->longname);
+			fprintf(stderr, "\x1b[1m%s\x1b[0m: error: `%c` flag requires an argument, but none was provided\n", pname, ans->flast->shortname);
 			break;
 		}
 		case GCE_NONSENSE_ARGUMENT: {
@@ -391,15 +385,14 @@ static void getc_handle_error (const struct GCAns *const ans, const char *const 
 }
 #endif
 
-GC_API struct GCAns getc_init (uint32_t argc, char **argv, struct GCFlag *flags, const char *pgmname) {
+GC_API struct GCAns gc_init (uint32_t argc, char **argv, struct GCFlag *flags, const uint32_t nflags, const char *pgmname) {
 	struct GCAns ans;
 	memset(&ans, 0, sizeof(ans));
-
-	ans.err = check_integrity(flags);
+	ans.err = gc_internal_check_integrity(flags, nflags);
 
 	if (GC_IS_PROGRAMMER_FAULT(ans.err)) {
 #ifdef GC_ALLOW_GC_HANDLE_ERRORS
-		programmer_fault(ans.err);
+		gc_internal_handle_programmer_fault(ans.err);
 #else
 		return ans;
 #endif
@@ -408,8 +401,8 @@ GC_API struct GCAns getc_init (uint32_t argc, char **argv, struct GCFlag *flags,
 		return ans;
 	}
 
-	struct GCMap map;
-	map_flags(&map, flags);
+	struct GCMap map = { .nflags = nflags };
+	gc_internal_map_flags(&map, flags);
 
 	bool onlypargs = false;
 	for (int i = 1; (i < argc) && (ans.err == GCE_NONE); i++) {
@@ -418,39 +411,48 @@ GC_API struct GCAns getc_init (uint32_t argc, char **argv, struct GCFlag *flags,
 		ans.lex.len = strlen(ans.lex.src);
 
 		if (onlypargs) {
-			ans.err = parse_positional_argument(&ans);
+			ans.err = gc_internal_parse_parg(&ans);
 			continue;
 		}
 
 		if (*ans.lex.src == '-' && ans.lex.len >= 2 && isalnum(ans.lex.src[1])) {
-			ans.err = work_short(&map, &ans);
+			ans.err = gc_internal_parse_shortopt(&map, &ans);
 		}
 		else if (ans.lex.len >= 3 && *ans.lex.src == '-' && ans.lex.src[1] == '-' && isalnum(ans.lex.src[2])) {
-			ans.err = parse_longopt(&map, &ans);
+			ans.err = gc_internal_parse_longopt(&map, &ans);
 		}
 		else if (ans.lex.len == 2 && *ans.lex.src == '-' && ans.lex.src[1] == '-') {
 			onlypargs = true;
 			
 		} else {
-			ans.err = parse_argument(&ans);
+			ans.err = gc_internal_parse_argument(&ans);
 		}
 	}
 
-	if (is_arg_set(ans.flast) == false) {
+	if (gc_internal_was_arg_set(ans.flast) == false) {
 		ans.err = GCE_MISSING_ARGUMENT;
 	}
 #ifdef GC_ALLOW_GC_HANDLE_ERRORS
 	if (GC_IS_USER_FAULT(ans.err)) {
-		getc_handle_error(&ans, pgmname);
+		gc_internal_handle_user_fault(&ans, pgmname);
 	}
 	if (GC_IS_PROGRAMMER_FAULT(ans.err)) {
-		programmer_fault(ans.err);
+		gc_internal_handle_programmer_fault(ans.err);
 	}
 	if (GC_IS_SYS_FAULT(ans.err)) {
-		getc_should_panic(NULL, "internal error!");
+		gc_internal_should_panic(NULL, "internal error!");
 	}
 #endif
 	return ans;
+}
+
+GC_API void gc_free (struct GCAns *ans) {
+	if ((ans == NULL) || (ans->pargs.arguments == NULL)) {
+		return;
+	}
+	ans->pargs.total = 0;
+	ans->pargs.__cap = 0;
+	free(ans->pargs.arguments);
 }
 
 #endif

@@ -1,0 +1,192 @@
+
+	GC - GetC - A getopt like library for C & C++
+	Version 1.0
+	Author: h0p3so - juan diego patino munoz
+	License: None
+
+	OVERVIEW
+	========
+	gc.h is a single header library for parsing command-line arguments in C and C++ programs.
+	It support several features which are described bellow.	
+
+	QUICK START
+	===========
+	If you want to see an actual usage of GC, please take a look into `demo.c` file.
+
+	API REFERENCE
+	=============
+	
+	* GC_API struct GCAns gc_init (
+		uint32_t argc,
+		char **argv,
+		struct GCFlag *flags,
+		const uint32_t nflags,
+		const char *pgmname
+	);
+
+	Main function, parses the command-line arguments; It must be called once at program startup.
+
+	Parameters:
+	~ argc: number of parameters
+	~ argv: list of parameters
+	~ flags: defined flags for the caller program
+	~ nflags: number of flags defined
+
+	Return: It returns a `GCAns` structure containing parsed results, positional arguments and
+	any possible error occurred in the process (see OPTIONAL MACROS section).
+
+
+	* GC_API void gc_free (struct GCAns*);
+
+	Call this function once you're done with the positional arguments, it will free GCAns.pargs.arguments and set
+	__cap and total (see GCAns section) to zero as long as it is possible (GCAns or arguments are not null).
+
+	* struct GCFlag {
+		union {
+			char    *text;
+			double   doub;
+			uint64_t u64;
+			int64_t  i64;
+			uint32_t u32;
+			int32_t  i32;
+		} as;
+		const char *longname;
+		const char shortname;
+		const getc_opts_t opts;
+		/* these variables shouldn't be initialized */
+		bool seen;
+		bool aset;
+	};
+
+	Describes a flag, these must be initialized before calling `gc_init`.
+
+	Fields:
+	- shortname: an unique identifier character (e.g. 'a', 'f', 'A', '9' etc)                  [Required]
+	- longname: a longname which describes the flag (e.g. 'file', 'verbose' etc)               [Required | NULL]
+	- opts: bitmask combining an argument mode and argument type (see OPTIONS BITMASK section) [Required]
+	- seen: set to true by GC if the flag was present                                          [Do not set, will be overwritten anyways]
+	- aset: set to true by GC if an argument was parsed for this flag                          [Do not set, will be overwritten anyways]
+	- as: union holding the parsed argument value after `gc_init` returns                      [Do not set, will be overwritten anyways]
+	
+	Union field (as):
+	- as.text: char*      - GC_OPTS_FLAG_ARG_TYPE_TEXT
+	- as.doub: double     - GC_OPTS_FLAG_ARG_TYPE_DOUB
+	- as.u32 : uint32_t   - GC_OPTS_FLAG_ARG_TYPE_UI32
+	- as.i32 : int32_t    - GC_OPTS_FLAG_ARG_TYPE_I32
+	- as.u64 : uint64_t   - GC_OPTS_FLAG_ARG_TYPE_UI64
+	- as.u64 : uint64_t   - GC_OPTS_FLAG_ARG_TYPE_I64
+
+	* struct GCAns {
+		struct {
+			uint32_t pos;
+			uint32_t len;
+			char *src;
+		} lex;
+		struct {
+			char **arguments;
+			uint32_t total;
+			uint32_t __cap;
+		} pargs;
+		struct GCFlag *flast;
+		enum GCError err;
+	};
+
+	Returned by `gc_init`: results after parsing.
+	
+	Fields:
+	- lex: internal information for parsing & error handling matters.
+	- pargs: positional arguments.
+	- flast: last flag seen (internal use).
+	- err: error occured (if any) (see OPTINAL MACROS section).
+
+	* Bismask options
+	The `opts` field of a GCFlag is a bitmask combining one argument mode, one argument type and optionally a numeric base
+
+	Argument mode
+	- GC_OPTS_FLAG_NON_ARG: Flag does not take arguments (boolean flag)
+	- GC_OPTS_FLAG_OPT_ARG: Flag may take an argument
+	- GC_OPTS_FLAG_REQ_ARG: Flag requires an argument to work correctly
+
+	Argument type:
+	- GC_OPTS_FLAG_ARG_TYPE_TEXT: string (char*)
+        - GC_OPTS_FLAG_ARG_TYPE_DOUB: double
+        - GC_OPTS_FLAG_ARG_TYPE_UI32: unsigned 32-bit integer
+        - GC_OPTS_FLAG_ARG_TYPE_I32:  signed 32-bit integer
+        - GC_OPTS_FLAG_ARG_TYPE_UI64: unsigned 64-bit integer
+        - GC_OPTS_FLAG_ARG_TYPE_I64:  signed 64-bit integer
+
+	Numeric base:
+	- GC_OPTS_ARG_NUM_BASE_10: parse integer in base 10 (default)
+	- GC_OPTS_ARG_NUM_BASE_16: parse integer in base 16 (needs to be specified)
+
+	Examples:
+	- GC_OPTS_FLAG_NON_ARG
+		this would be interpreted as a boolean flag
+
+	- GC_OPTS_FLAG_REQ_ARG | GC_OPTS_FLAG_ARG_TYPE_TEXT
+		specifies a flag which needs an argument of type text
+
+	- GC_OPTS_FLAG_REQ_ARG | GC_OPTS_FLAG_ARG_TYPE_UI32 | GC_OPTS_ARG_NUM_BASE_16
+		a flag which takes an argument of type unsigned 4 byte integer in hexadecimal
+
+	- GC_OPTS_FLAG_OPT_ARG | GC_OPTS_FLAG_ARG_TYPE_UI64
+		this flag may take an argument of type uint64
+
+	NOTE: if a flag takes a number, yet the argument cannot be parsed as such, the program will set the argument to zero (0).
+
+	* Supported argument syntax
+	-v                 short flag, no argument
+	-f argument        short flag, plus argument
+	-vf argument       chained short flags, plus argument for 'f' flag   (*)
+	--file argument    long flag, plus argument
+	--file=argument    long flag, plus argument
+	--                 separator; everything after this is a positional argument
+	foo bar bazz       positional arguments (after '--' is found)
+
+	NOTE (*): if a chained short flags is provided is needed that only one of them requires an argument (GC_OPTS_FLAG_REQ_ARG)
+	so GC can assign the next token as an argument to it. If all flags are GC_OPTS_FLAG_NON_ARG or GC_OPTS_FLAG_NON_ARG there
+	will not be any problem
+
+	* Error handling
+	GC distinguishes three categories of errors:
+
+	Programmer faults: GC_IS_PROGRAMMER_FAULT: true
+	- GCE_INVALID_SHORTNAME:    invalid shortnames
+	- GCE_DUPLICATED_SHORTNAME: duplicated shortnames
+	- GCE_DUPLICATED_LONGNAME:  duplicated longnames
+	- GCE_MALFORMED_OPTS:       malformed `opts` field
+
+	User faults: GC_IS_USER_FAULT: true
+	- GCE_UNKNOWN_SHORTNAME: unknown short flag name
+	- GCE_UNKNOWN_LONGNAME:  unknown long flag name
+	- GCE_MISSING_ARGUMENT:  missing argument for GC_OPTS_FLAG_REQ_ARG flags
+	- GCE_NONSENSE_ARGUMENT: argument with no associated flag
+	- GCE_TOO_MANY_PARGS:    too many positional arguments (see OPTIONAL MACROS section)
+
+	* Optional macros
+	In the GC source code (gc.h) there are some macros which are defined by default, you can change this
+	to you preference:
+
+	- GC_ALLOW_GC_HANDLE_ERRORS: [defined by default in GC_IMPLEMENTATION].
+
+	When defined, GC prints descriptive error messages to stderr and calls exit() on all
+	fault cases. If not defined, GC returns the error code via GCAns.err and the caller
+	is responsable for handling the errors.
+
+	- GC_PARGS_FLEXIBLE: [defined by default in GC_IMPLEMENTATION]
+	When defined, the positional arguments array grows dynamically as needed (steps of GC_INTERNAL_PARGS_STEP_FACTOR).
+	If not defined, positional arguments are limited to GC_INTERNAL_PARGS_STEP_FACTOR (8 by default) and GCE_TOO_MANY_PARGS
+	is returned if such limit is exceeded
+
+	- GC_API:
+	Controls the linkage of GC famility of functions; `static` by default. Override if needed.
+
+	* Notes:
+	1. Shortflag musg be alphanumeric (a-z A-Z 0-9)
+	2. Longnames are optional. A flag may have only a shortname
+	3. Boolean flags do not need a type. Use GC_OPTS_FLAG_NON_ARG alone
+	4. For numeric values as argument, invalid input (e.g. "abc") will silently produce 0, as specified by strtoxxx functions
+	5. pargs.arguments points to values provided in original `argv`
+	6. `argv` strings are not copied. as.text points directly into `argv`
+
+	h0p3so

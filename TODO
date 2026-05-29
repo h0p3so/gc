@@ -1,7 +1,0 @@
-mandatory:
-	[x] shortname flags
-	[x] longname flags
-	[x] arguments
-	[x] --flagname=argument
-	[x] error handling
-	[ ] usage helper
